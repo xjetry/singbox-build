@@ -86,46 +86,19 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          mkdir -p build dist
-
+          mkdir -p dist
           for arch in amd64 arm64; do
             echo "::group::build linux/$arch"
+            name="sing-box-$VERSION-linux-$arch"
+            mkdir -p "dist/$name"
             GOOS=linux GOARCH="$arch" go build -v -trimpath \
               -tags "$BUILD_TAGS" \
               -ldflags "-X github.com/sagernet/sing-box/constant.Version=$VERSION -s -w -buildid=" \
-              -o "build/sing-box-$arch" ./cmd/sing-box
+              -o "dist/$name/sing-box" ./cmd/sing-box
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -r "dist/${name:?}"
             echo "::endgroup::"
           done
-
-          pack() {
-            tar -C dist -czf "dist/$1.tar.gz" "$1"
-            rm -r "dist/${1:?}"
-          }
-
-          for arch in amd64 arm64; do
-            name="sing-box-$VERSION-linux-$arch"
-            mkdir -p "dist/$name"
-            install -m755 "build/sing-box-$arch" "dist/$name/sing-box"
-            pack "$name"
-          done
-
-          name="sing-box-$VERSION-linux-universal"
-          mkdir -p "dist/$name"
-          install -m755 build/sing-box-amd64 "dist/$name/sing-box-amd64"
-          install -m755 build/sing-box-arm64 "dist/$name/sing-box-arm64"
-          cat > "dist/$name/sing-box" <<'EOF'
-          #!/bin/sh
-          # Dispatch to the binary matching the host CPU so one package serves both architectures
-          dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-          case "$(uname -m)" in
-            x86_64 | amd64) exec "$dir/sing-box-amd64" "$@" ;;
-            aarch64 | arm64) exec "$dir/sing-box-arm64" "$@" ;;
-            *) echo "sing-box: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          EOF
-          chmod +x "dist/$name/sing-box"
-          pack "$name"
-
           (cd dist && sha256sum ./*.tar.gz > checksums.sha256)
           ls -lh dist
 

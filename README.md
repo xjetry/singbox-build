@@ -16,7 +16,6 @@ with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_ap
 
 - `sing-box-<version>-linux-amd64.tar.gz`
 - `sing-box-<version>-linux-arm64.tar.gz`
-- `sing-box-<version>-linux-universal.tar.gz` — 同时包含两个架构的二进制,`sing-box` 启动脚本按 `uname -m` 自动选择,一个包在 amd64/arm64 上通用
 - `checksums.sha256`
 
 也可在 Actions 页面手动触发 workflow。
