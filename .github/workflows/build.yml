@@ -23,41 +23,55 @@ jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.latest.outputs.tag }}
-      build: ${{ steps.decide.outputs.build }}
+      targets: ${{ steps.decide.outputs.targets }}
     steps:
-      - name: Get latest sing-box release
+      - name: Find latest release and pre-release
         id: latest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)"
-          echo "latest upstream release: $tag"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          stable="$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)"
+          pre="$(gh api 'repos/SagerNet/sing-box/releases?per_page=50' --jq '[.[] | select(.prerelease)][0].tag_name // empty')"
+          echo "latest stable: $stable, latest pre-release: ${pre:-none}"
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if already released here
+      - name: Skip tags already released here
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.latest.outputs.tag }}
+          STABLE: ${{ steps.latest.outputs.stable }}
+          PRE: ${{ steps.latest.outputs.pre }}
         run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $TAG already exists, skipping build"
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          candidates="$(jq -cn --arg s "$STABLE" --arg p "$PRE" \
+            '[{tag: $s, prerelease: false}] + (if $p != "" and $p != $s then [{tag: $p, prerelease: true}] else [] end)')"
+          targets='[]'
+          while read -r item; do
+            tag="$(jq -r .tag <<<"$item")"
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "release $tag already exists, skipping"
+            else
+              targets="$(jq -c --argjson i "$item" '. + [$i]' <<<"$targets")"
+            fi
+          done < <(jq -c '.[]' <<<"$candidates")
+          echo "targets to build: $targets"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
   build:
     needs: check
-    if: needs.check.outputs.build == 'true'
+    if: needs.check.outputs.targets != '[]'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.targets) }}
     steps:
-      - name: Checkout sing-box ${{ needs.check.outputs.tag }}
+      - name: Checkout sing-box ${{ matrix.tag }}
         uses: actions/checkout@v4
         with:
           repository: SagerNet/sing-box
-          ref: ${{ needs.check.outputs.tag }}
+          ref: ${{ matrix.tag }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -67,7 +81,7 @@ jobs:
 
       - name: Build
         env:
-          TAG: ${{ needs.check.outputs.tag }}
+          TAG: ${{ matrix.tag }}
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
@@ -93,11 +107,17 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.check.outputs.tag }}
+          TAG: ${{ matrix.tag }}
+          PRERELEASE: ${{ matrix.prerelease }}
         run: |
+          set -euo pipefail
+          args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
             --title "sing-box $TAG" \
             --notes "sing-box $TAG built with tags: \`$BUILD_TAGS\`
 
           Upstream release: https://github.com/SagerNet/sing-box/releases/tag/$TAG" \
-            dist/*.tar.gz dist/checksums.sha256
+            "${args[@]}" dist/*.tar.gz dist/checksums.sha256
