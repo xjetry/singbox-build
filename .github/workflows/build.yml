@@ -1,0 +1,103 @@
+name: Build sing-box
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-sing-box
+  cancel-in-progress: false
+
+env:
+  # Upstream default tags plus with_v2ray_api for the V2Ray stats/handler gRPC API
+  BUILD_TAGS: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_v2ray_api
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.latest.outputs.tag }}
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      - name: Get latest sing-box release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)"
+          echo "latest upstream release: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if already released here
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists, skipping build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sing-box ${{ needs.check.outputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box
+          ref: ${{ needs.check.outputs.tag }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Build
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            echo "::group::build $GOOS/$GOARCH"
+            out="dist/sing-box-$VERSION-$GOOS-$GOARCH"
+            mkdir -p "$out"
+            GOOS="$GOOS" GOARCH="$GOARCH" go build -v -trimpath \
+              -tags "$BUILD_TAGS" \
+              -ldflags "-X github.com/sagernet/sing-box/constant.Version=$VERSION -s -w -buildid=" \
+              -o "$out/sing-box" ./cmd/sing-box
+            tar -C dist -czf "$out.tar.gz" "$(basename "$out")"
+            rm -r "$out"
+            echo "::endgroup::"
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.sha256)
+          ls -lh dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "sing-box $TAG" \
+            --notes "sing-box $TAG built with tags: \`$BUILD_TAGS\`
+
+          Upstream release: https://github.com/SagerNet/sing-box/releases/tag/$TAG" \
+            dist/*.tar.gz dist/checksums.sha256
