@@ -1,0 +1,125 @@
+name: Build mbox
+
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-mbox.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-mbox
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.decide.outputs.targets }}
+    steps:
+      - name: Find latest release and pre-release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          stable="$(gh api repos/enfein/mbox/releases/latest --jq .tag_name)"
+          pre="$(gh api 'repos/enfein/mbox/releases?per_page=50' --jq '[.[] | select(.prerelease)][0].tag_name // empty')"
+          echo "latest stable: $stable, latest pre-release: ${pre:-none}"
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
+
+      - name: Skip tags already released here
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE: ${{ steps.latest.outputs.stable }}
+          PRE: ${{ steps.latest.outputs.pre }}
+        run: |
+          set -euo pipefail
+          candidates="$(jq -cn --arg s "$STABLE" --arg p "$PRE" \
+            '[{tag: $s, prerelease: false}] + (if $p != "" and $p != $s then [{tag: $p, prerelease: true}] else [] end)')"
+          targets='[]'
+          while read -r item; do
+            tag="$(jq -r .tag <<<"$item")"
+            release_tag="mbox-$tag"
+            if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "release $release_tag already exists, skipping"
+            else
+              item="$(jq -c --arg release_tag "$release_tag" '. + {release_tag: $release_tag}' <<<"$item")"
+              targets="$(jq -c --argjson i "$item" '. + [$i]' <<<"$targets")"
+            fi
+          done < <(jq -c '.[]' <<<"$candidates")
+          echo "targets to build: $targets"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.targets) }}
+    steps:
+      - name: Checkout mbox ${{ matrix.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: enfein/mbox
+          ref: ${{ matrix.tag }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Load build configuration
+        run: |
+          echo "BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_v2ray_api" >> "$GITHUB_ENV"
+          echo "LDFLAGS=$(cat release/LDFLAGS)" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          TAG: ${{ matrix.tag }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            echo "::group::build linux/$arch"
+            name="mbox-$VERSION-linux-$arch"
+            mkdir -p "dist/$name"
+            GOOS=linux GOARCH="$arch" go build -v -trimpath \
+              -tags "$BUILD_TAGS" \
+              -ldflags "-X github.com/sagernet/sing-box/constant.Version=$VERSION $LDFLAGS -s -w -buildid=" \
+              -o "dist/$name/sing-box" ./cmd/sing-box
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -r "dist/${name:?}"
+            echo "::endgroup::"
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.sha256)
+          ls -lh dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
+          RELEASE_TAG: ${{ matrix.release_tag }}
+          PRERELEASE: ${{ matrix.prerelease }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "mbox $TAG" \
+            --notes "mbox $TAG built with tags: \`$BUILD_TAGS\`
+
+          Upstream release: https://github.com/enfein/mbox/releases/tag/$TAG" \
+            "${args[@]}" dist/*.tar.gz dist/checksums.sha256
