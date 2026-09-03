@@ -79,8 +79,21 @@ jobs:
 
       - name: Load build configuration
         run: |
-          echo "BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_v2ray_api" >> "$GITHUB_ENV"
+          echo "BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_v2ray_api,with_naive_outbound,with_purego" >> "$GITHUB_ENV"
           echo "LDFLAGS=$(cat release/LDFLAGS)" >> "$GITHUB_ENV"
+
+      - name: Fetch libcronet.so
+        run: |
+          set -euo pipefail
+          CRONET_GO_VERSION="$(cat .github/CRONET_GO_VERSION)"
+          mkdir -p cronet-lib
+          git init cronet-lib
+          git -C cronet-lib remote add origin https://github.com/sagernet/cronet-go.git
+          git -C cronet-lib sparse-checkout set --no-cone \
+            /lib/linux_amd64/libcronet.so \
+            /lib/linux_arm64/libcronet.so
+          git -C cronet-lib fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C cronet-lib checkout FETCH_HEAD
 
       - name: Build
         env:
@@ -98,6 +111,7 @@ jobs:
               -tags "$BUILD_TAGS" \
               -ldflags "-X github.com/sagernet/sing-box/constant.Version=$VERSION $LDFLAGS -s -w -buildid=" \
               -o "dist/$name/sing-box" ./cmd/sing-box
+            cp "cronet-lib/lib/linux_${arch}/libcronet.so" "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             rm -r "dist/${name:?}"
             echo "::endgroup::"

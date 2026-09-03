@@ -1,21 +1,23 @@
 # singbox-build
 
-定时构建以下项目的最新稳定版与最新预发布版，并在各自的上游构建标签基础上额外启用 `with_v2ray_api`（V2Ray gRPC 统计 API）：
+定时构建以下项目的最新稳定版与最新预发布版，并在各自的上游构建标签基础上额外启用 `with_v2ray_api`（V2Ray gRPC 统计 API）和 `with_naive_outbound`（NaiveProxy outbound）：
 
 - [sing-box](https://github.com/SagerNet/sing-box)
 - [mbox](https://github.com/enfein/mbox)
 
-Scheduled Linux builds of the latest stable and pre-release versions of sing-box and mbox, with `with_v2ray_api` enabled on top of each source's default build tags.
+Scheduled Linux builds of the latest stable and pre-release versions of sing-box and mbox, with `with_v2ray_api` and `with_naive_outbound` enabled on top of each source's default build tags.
 
 ## 构建配置
 
-sing-box 使用本仓库维护的上游默认标签及 `with_v2ray_api`：
+sing-box 使用本仓库维护的上游默认标签，并追加 `with_v2ray_api`、`with_naive_outbound`、`with_purego`：
 
 ```
-with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_v2ray_api
+with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_v2ray_api,with_naive_outbound,with_purego
 ```
 
-mbox 使用对应版本的 `release/DEFAULT_BUILD_TAGS_OTHERS` 和 `release/LDFLAGS`，并在构建标签中追加 `with_v2ray_api`。
+mbox 使用对应版本的 `release/DEFAULT_BUILD_TAGS_OTHERS` 和 `release/LDFLAGS`，并在构建标签中追加 `with_v2ray_api`、`with_naive_outbound`、`with_purego`。
+
+`with_purego` 让 NaiveProxy outbound 在 `CGO_ENABLED=0` 下可用。每个 Linux 归档会附带对应架构的 `libcronet.so`，运行时需与 `sing-box` 放在同一目录（或系统库路径）。
 
 ## 产物
 

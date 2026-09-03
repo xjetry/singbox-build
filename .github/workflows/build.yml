@@ -16,8 +16,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Upstream default tags plus with_v2ray_api for the V2Ray stats/handler gRPC API
-  BUILD_TAGS: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_v2ray_api
+  # Upstream default tags plus with_v2ray_api. with_naive_outbound needs
+  # with_purego so CGO_ENABLED=0 can still load libcronet.so at runtime.
+  BUILD_TAGS: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_v2ray_api,with_naive_outbound,with_purego
 
 jobs:
   check:
@@ -79,6 +80,19 @@ jobs:
           go-version: stable
           check-latest: true
 
+      - name: Fetch libcronet.so
+        run: |
+          set -euo pipefail
+          CRONET_GO_VERSION="$(cat .github/CRONET_GO_VERSION)"
+          mkdir -p cronet-lib
+          git init cronet-lib
+          git -C cronet-lib remote add origin https://github.com/sagernet/cronet-go.git
+          git -C cronet-lib sparse-checkout set --no-cone \
+            /lib/linux_amd64/libcronet.so \
+            /lib/linux_arm64/libcronet.so
+          git -C cronet-lib fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C cronet-lib checkout FETCH_HEAD
+
       - name: Build
         env:
           TAG: ${{ matrix.tag }}
@@ -95,6 +109,7 @@ jobs:
               -tags "$BUILD_TAGS" \
               -ldflags "-X github.com/sagernet/sing-box/constant.Version=$VERSION -s -w -buildid=" \
               -o "dist/$name/sing-box" ./cmd/sing-box
+            cp "cronet-lib/lib/linux_${arch}/libcronet.so" "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             rm -r "dist/${name:?}"
             echo "::endgroup::"
